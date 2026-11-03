@@ -20,19 +20,66 @@ st.title("⚡ ProjectHub")
 st.caption("Electronics Project Business & Inventory Management")
 
 def get_config():
+    """Load database settings from Streamlit Secrets or environment variables."""
     if "mysql" in st.secrets:
-        return dict(st.secrets["mysql"])
-    return {
-        "host": os.getenv("DB_HOST", "127.0.0.1"),
-        "port": int(os.getenv("DB_PORT", "3306")),
-        "user": os.getenv("DB_USER", "root"),
-        "password": os.getenv("DB_PASSWORD", ""),
-        "database": os.getenv("DB_NAME", "projecthub"),
-    }
+        config = dict(st.secrets["mysql"])
+    else:
+        config = {
+            "host": os.getenv("DB_HOST", "127.0.0.1"),
+            "port": int(os.getenv("DB_PORT", "3306")),
+            "user": os.getenv("DB_USER", "root"),
+            "password": os.getenv("DB_PASSWORD", ""),
+            "database": os.getenv("DB_NAME", "projecthub"),
+        }
+        env_ca = os.getenv("DB_SSL_CA")
+        if env_ca:
+            config["ssl_ca_path"] = env_ca
+
+    # Streamlit Secrets can store the PEM certificate as multiline text.
+    ca_text = config.pop("ssl_ca", None)
+    ca_path = config.pop("ssl_ca_path", None)
+
+    if ca_text:
+        ca_path = _write_ca_certificate(ca_text)
+
+    host = config.get("host", "")
+    if "aivencloud.com" in host and not ca_path:
+        raise RuntimeError(
+            "Aiven requires its CA certificate. Add the full CA certificate "
+            "contents as ssl_ca in Streamlit Secrets."
+        )
+
+    if ca_path:
+        config.update({
+            "ssl_ca": ca_path,
+            "ssl_verify_cert": True,
+            "ssl_verify_identity": True,
+        })
+
+    config["port"] = int(config.get("port", 3306))
+    return config
+
+
+@st.cache_resource
+def _write_ca_certificate(certificate_text):
+    """Write the public CA certificate from Streamlit Secrets to a temp PEM file."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".pem", prefix="projecthub-aiven-ca-", delete=False
+    ) as cert_file:
+        cert_file.write(certificate_text.strip() + "\\n")
+        return cert_file.name
+
 
 @st.cache_resource
 def get_connection():
-    return mysql.connector.connect(**get_config(), autocommit=False)
+    config = get_config()
+    return mysql.connector.connect(
+        **config,
+        autocommit=False,
+        connection_timeout=20,
+    )
 
 def run_query(sql, params=None, fetch=True):
     conn = get_connection()
@@ -66,7 +113,7 @@ try:
 except Exception as exc:
     st.error("ProjectHub cannot connect to MySQL.")
     st.code(str(exc))
-    st.info("Run database/ProjectHub_Full_Setup.sql in MySQL Workbench, then configure your MySQL credentials in .streamlit/secrets.toml.")
+    st.info("Check the [mysql] settings in Streamlit Secrets. For Aiven, use the cloud host, port 18076, database projecthub, and the full CA certificate in ssl_ca.")
     st.stop()
 
 pages = ["Dashboard", "Orders", "New Order", "Customers", "Projects", "Inventory", "Purchases", "Payments", "Expenses", "Reports"]
@@ -458,3 +505,4 @@ elif page == "Reports":
 
 st.sidebar.divider()
 st.sidebar.caption("ProjectHub · DBMS Academic Project")
+
